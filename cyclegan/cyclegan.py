@@ -8,8 +8,14 @@ from torch.utils.data import Dataset, DataLoader
 class cycleDataset(Dataset):
     def __init__(self, path):
         super(cycleDataset).__init__(self)
-        self.filesA = [i if i.endswith('.jpg') for i in os.listdir(path+'A')]   # load images from '/path/to/data/trainA'
-        self.filesB = [i if i.endswith('.jpg') for i in os.listdir(path+'A')]    # load images from '/path/to/data/trainB'
+        self.filesA = []
+        for i in os.listdir(path+'A'):
+            if i.endswith('.jpg'):
+                self.filesA.append(i)
+        self.filesB = []
+        for i in os.listdir(path + 'B'):
+            if i.endswith('.jpg'):
+                self.filesA.append(i)
         self.sizeA = len(self.filesA)  # get the size of dataset A
         self.sizeB = len(self.filesB)  # get the size of dataset B
 
@@ -109,7 +115,7 @@ class discriminator(nn.Module):
             nn.Conv2d(512, 1, kernel_size=4, stride=1, padding=1)
         )
 
-     def forward(self, x):
+    def forward(self, x):
         out = self.conv1(x)
         out = self.conv2(out)
         out = self.conv3(out)
