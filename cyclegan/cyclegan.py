@@ -1,21 +1,20 @@
 import torch
 import torch.nn as nn
-import torch.functional as F
 from torchvision import transforms
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
-
+import os
 class cycleDataset(Dataset):
     def __init__(self, path):
-        super(cycleDataset).__init__(self)
+        super(cycleDataset, self).__init__()
         self.filesA = []
         for i in os.listdir(path+'A'):
             if i.endswith('.jpg'):
-                self.filesA.append(i)
+                self.filesA.append(path + 'A/' + i)
         self.filesB = []
         for i in os.listdir(path + 'B'):
             if i.endswith('.jpg'):
-                self.filesA.append(i)
+                self.filesB.append(path + 'B/' + i)
         self.sizeA = len(self.filesA)  # get the size of dataset A
         self.sizeB = len(self.filesB)  # get the size of dataset B
 
@@ -46,6 +45,7 @@ class generator(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(generator, self).__init__()
         self.conv1 = nn.Sequential(
+            nn.ReflectionPad2d(3),
             nn.Conv2d(in_channels=in_channels, out_channels=64, kernel_size=7, padding=0),
             nn.BatchNorm2d(64),
             nn.ReLU(True))
@@ -79,6 +79,7 @@ class generator(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(True))
         self.conv4 = nn.Sequential(
+            nn.ReflectionPad2d(3),
             nn.Conv2d(64, out_channels, kernel_size=7, padding=0),
             nn.Tanh())
 
@@ -123,34 +124,39 @@ class discriminator(nn.Module):
 
 in_channels = 3
 out_channels = 3
-GXtoY = generator(in_channels=in_channels, out_channels=out_channels)
-GYtoX = generator(in_channels=out_channels, out_channels=in_channels)
-DX = discriminator(in_channels=out_channels)
-DY = discriminator(in_channels=in_channels)
+GXtoY = generator(in_channels=in_channels, out_channels=out_channels).cuda()
+GYtoX = generator(in_channels=out_channels, out_channels=in_channels).cuda()
+DX = discriminator(in_channels=out_channels).cuda()
+DY = discriminator(in_channels=in_channels).cuda()
 path = './horse2zebra/train'
 dataloader = DataLoader(cycleDataset(path), batch_size=1)
-from torch.autograd import Variable
 import itertools
 lambdaCycle = 10
 num_epochs = 5
-criterionGAN = nn.MSELoss()
-criterionCycle = nn.L1Loss()
+criterionGAN = nn.MSELoss().cuda()
+criterionCycle = nn.L1Loss().cuda()
 optimizer_G = torch.optim.Adam(itertools.chain(GXtoY.parameters(), GYtoX.parameters()), lr=0.0002,
                                     betas=(0.5, 0.999))
 optimizer_D = torch.optim.Adam(itertools.chain(DX.parameters(), DY.parameters()), lr=0.0002,
                                     betas=(0.5, 0.999))
+trueTensor = torch.Tensor([1.0]).cuda()
+falseTensor = torch.Tensor([0.0]).cuda()
 for epoch in range(num_epochs):
     for idx, data in enumerate(dataloader):
-        realX = data[0]
-        realY = data[1]
+        realX = data[0].cuda()
+        realY = data[1].cuda()
         fakeX = GYtoX(realY)
         fakeY = GXtoY(realX)
         reconstructedX = GYtoX(fakeY)
         reconstructedY = GXtoY(fakeX)
-        lossDX = (criterionGAN(DX(realX), 1) + criterionGAN(DX(fakeX), 0))/2
-        lossDY = (criterionGAN(DY(realY), 1) + criterionGAN(DY(fakeY), 0))/2
-        lossAdvGXtoY = criterionGAN(DY(fakeY), 1)
-        lossAdvGYtoX = criterionGAN(DX(fakeX), 1)
+        realPredX = DX(realX)
+        realPredY = DY(realY)
+        fakePredX = DX(fakeX)
+        fakePredY = DY(fakeY)
+        lossDX = (criterionGAN(realPredX, trueTensor.expand_as(realPredX)) + criterionGAN(fakePredX, falseTensor.expand_as(fakePredX)))/2
+        lossDY = (criterionGAN(realPredY, trueTensor.expand_as(realPredY)) + criterionGAN(fakePredY, falseTensor.expand_as(fakePredY)))/2
+        lossAdvGXtoY = criterionGAN(fakePredY, trueTensor.expand_as(fakePredY))
+        lossAdvGYtoX = criterionGAN(fakePredX, trueTensor.expand_as(fakePredX))
         lossCycleGX = criterionCycle(reconstructedX, realX)
         lossCycleGY = criterionCycle(reconstructedY, realY)
         lossG = lossAdvGXtoY + lossAdvGYtoX + lambdaCycle*(lossCycleGX + lossCycleGY)
@@ -159,14 +165,14 @@ for epoch in range(num_epochs):
         for i in DY.parameters():
             i.requires_grad = False
         optimizer_G.zero_grad()
-        lossG.backward()
+        lossG.backward(retain_graph=True)
         optimizer_G.step()
         for i in DX.parameters():
             i.requires_grad = True
         for i in DY.parameters():
             i.requires_grad = True
         optimizer_D.zero_grad()
-        lossDX.backward()
-        lossDY.backward()
+        lossDX.backward(retain_graph=True)
+        lossDY.backward(retain_graph=True)
         optimizer_D.step()
-        print(idk, lossDY, lossDY, lossG)
+        print(idx, lossDY, lossDY, lossG)
