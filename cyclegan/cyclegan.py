@@ -1,9 +1,15 @@
+# !wget https://people.eecs.berkeley.edu/~taesung_park/CycleGAN/datasets/horse2zebra.zip
+# !unzip horse2zebra.zip
+# !mv horse2zebra/horse2zebra horse2zebra
+
 import torch
 import torch.nn as nn
 from torchvision import transforms
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 import os
+import itertools
+
 class cycleDataset(Dataset):
     def __init__(self, path):
         super(cycleDataset, self).__init__()
@@ -32,10 +38,12 @@ class residual_block(nn.Module):
     def __init__(self, in_channels):
         super(residual_block, self).__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=3, padding=1),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=3, padding=0),
             nn.BatchNorm2d(in_channels),
             nn.ReLU(True),
-            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=3, padding=1),
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=3, padding=0),
             nn.BatchNorm2d(in_channels)
         )
     def forward(self, x):
@@ -128,11 +136,6 @@ GXtoY = generator(in_channels=in_channels, out_channels=out_channels).cuda()
 GYtoX = generator(in_channels=out_channels, out_channels=in_channels).cuda()
 DX = discriminator(in_channels=out_channels).cuda()
 DY = discriminator(in_channels=in_channels).cuda()
-path = './horse2zebra/train'
-dataloader = DataLoader(cycleDataset(path), batch_size=1)
-import itertools
-lambdaCycle = 10
-num_epochs = 5
 criterionGAN = nn.MSELoss().cuda()
 criterionCycle = nn.L1Loss().cuda()
 optimizer_G = torch.optim.Adam(itertools.chain(GXtoY.parameters(), GYtoX.parameters()), lr=0.0002,
@@ -141,7 +144,14 @@ optimizer_D = torch.optim.Adam(itertools.chain(DX.parameters(), DY.parameters())
                                     betas=(0.5, 0.999))
 trueTensor = torch.Tensor([1.0]).cuda()
 falseTensor = torch.Tensor([0.0]).cuda()
-for epoch in range(num_epochs):
+lambdaCycle = 10
+
+path = './horse2zebra/train'
+dataloader = DataLoader(cycleDataset(path), batch_size=1)
+import itertools
+
+for epoch in range(0, 100):
+    print(epoch)
     for idx, data in enumerate(dataloader):
         realX = data[0].cuda()
         realY = data[1].cuda()
@@ -153,6 +163,7 @@ for epoch in range(num_epochs):
         realPredY = DY(realY)
         fakePredX = DX(fakeX)
         fakePredY = DY(fakeY)
+#         print(realX.shape, realY.shape, reconstructedX.shape, reconstructedY.shape)
         lossDX = (criterionGAN(realPredX, trueTensor.expand_as(realPredX)) + criterionGAN(fakePredX, falseTensor.expand_as(fakePredX)))/2
         lossDY = (criterionGAN(realPredY, trueTensor.expand_as(realPredY)) + criterionGAN(fakePredY, falseTensor.expand_as(fakePredY)))/2
         lossAdvGXtoY = criterionGAN(fakePredY, trueTensor.expand_as(fakePredY))
@@ -173,6 +184,53 @@ for epoch in range(num_epochs):
             i.requires_grad = True
         optimizer_D.zero_grad()
         lossDX.backward(retain_graph=True)
+        fakeX.detach()
         lossDY.backward(retain_graph=True)
+        fakeY.detach()
         optimizer_D.step()
-        print(idx, lossDY, lossDY, lossG)
+#         print(idx, lossDY, lossDY, lossG)
+    torch.save(GXtoY.state_dict(), 'GXtoY'+str(epoch)+'.pt')
+    torch.save(GYtoX.state_dict(), 'GYtoX'+str(epoch)+'.pt')
+    torch.save(DX.state_dict(), 'DX'+str(epoch)+'.pt')
+    torch.save(DY.state_dict(), 'DY'+str(epoch)+'.pt')
+
+GXtoY.load_state_dict(torch.load('GXtoY99.pt'))
+GXtoY.eval()
+GYtoX.load_state_dict(torch.load('GYtoX99.pt'))
+GYtoX.eval()
+DX.load_state_dict(torch.load('DX99.pt'))
+DX.eval()
+DY.load_state_dict(torch.load('DY99.pt'))
+DY.eval()
+
+path = './horse2zebra/test'
+dataloader = DataLoader(cycleDataset(path), batch_size=1)
+
+import matplotlib.pyplot as plt
+import numpy as np
+# %matplotlib inline
+for iter, i in enumerate(dataloader):
+  inpA = i[0].cuda()
+  inpB = i[1].cuda()
+  out1 = GXtoY(inpA)
+  out2 = GYtoX(inpB)
+  rec2 = GXtoY(out2)
+  rec1 = GYtoX(out1)
+  inpA = inpA.cpu().detach().numpy()[0, :, :, :].T
+  inpB = inpB.cpu().detach().numpy()[0, :, :, :].T
+  out1 = out1.cpu().detach().numpy()[0, :, :, :].T
+  out2 = out2.cpu().detach().numpy()[0, :, :, :].T
+  rec1 = rec1.cpu().detach().numpy()[0, :, :, :].T
+  rec2 = rec2.cpu().detach().numpy()[0, :, :, :].T
+  f1, ((ax1, ax2, ax3)) = plt.subplots(1, 3)
+  ax1.imshow(inpA)
+  ax2.imshow(out1)
+  ax3.imshow(rec1)
+  plt.savefig('results/'+'A'+str(iter)+'.png')
+  plt.close()
+  f2, ((ax4, ax5, ax6)) = plt.subplots(1, 3)
+  ax4.imshow(inpB)
+  ax5.imshow(out2)
+  ax6.imshow(rec2)
+  plt.savefig('results/'+'B'+str(iter)+'.png')
+  plt.close()
