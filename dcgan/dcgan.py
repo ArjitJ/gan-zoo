@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
-import torch
-from torchvision import datasets
 from torchvision import transforms
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.utils.data
+import torchvision.datasets as datasets
+import numpy as np
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import torchvision.utils as vutils
+from torch.autograd import Variable
 
 transform = transforms.Compose([transforms.Resize(64), transforms.ToTensor()])
 
@@ -10,19 +19,6 @@ mnist = datasets.MNIST(root="data/", train=True, download=True, transform=transf
 dataloader = torch.utils.data.DataLoader(
     dataset=mnist, batch_size=512, shuffle=True, num_workers=1
 )
-
-import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data
-import torchvision.datasets as dset
-import torchvision.transforms as transforms
-import numpy as np
-import torch.nn.functional as F
-import matplotlib.pyplot as plt
-import torchvision.utils as vutils
-from torch.autograd import Variable
 
 
 def convTBNReLU(in_channels, out_channels, kernel_size=4, stride=2, padding=1):
@@ -104,7 +100,7 @@ img_list = []
 GLosses = []
 DLosses = []
 
-for epoch in range(51, 100):
+for epoch in range(0, 50):
     print(epoch)
     for i, data in enumerate(dataloader):
         trueTensor = torch.Tensor([0.7 + 0.3 * np.random.random()]).cuda()
@@ -135,9 +131,9 @@ for epoch in range(51, 100):
         fake = G(fixedNoise).detach().cpu()
     img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
 
-# G.load_state_dict(torch.load('G99.pt'))
+# G.load_state_dict(torch.load('G49.pt'))
 # G.eval()
-# D.load_state_dict(torch.load('D99.pt'))
+# D.load_state_dict(torch.load('D49.pt'))
 # D.eval()
 
 import matplotlib.pyplot as plt
