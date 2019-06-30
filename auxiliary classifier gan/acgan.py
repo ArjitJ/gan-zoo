@@ -105,7 +105,7 @@ optimizerD = optim.Adam(D.parameters(), lr=0.0002, betas=(0.5, 0.999))
 optimizerG = optim.Adam(G.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
 fixedNoise = torch.randn(32, 100, 1, 1).cuda()
-fixedLabels = LongTensor(np.random.randint(0, 10, 32))
+fixedLabels = LongTensor(np.random.randint(0, 10, 32)).cuda()
 img_list = []
 GLosses = []
 DLosses = []
@@ -138,10 +138,31 @@ for epoch in range(0, 50):
         optimizerG.step()
         GLosses.append(lossG.cpu())
         DLosses.append(lossD.cpu())
-        print("Loss D {} G {}".format(lossD.cpu(), lossG.cpu()))
     if (epoch + 1) % 10 == 0:
+        print("Loss D {} G {}".format(lossD.cpu(), lossG.cpu()))
         torch.save(G.state_dict(), "G" + str(epoch) + ".pt")
         torch.save(D.state_dict(), "D" + str(epoch) + ".pt")
     with torch.no_grad():
         fake = G(fixedNoise, fixedLabels).detach().cpu()
     img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
+
+# G.load_state_dict(torch.load('G49.pt'))
+# G.eval()
+# D.load_state_dict(torch.load('D49.pt'))
+# D.eval()
+
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from IPython.display import HTML
+
+fig = plt.figure(figsize=(8, 8))
+plt.axis("off")
+ims = [[plt.imshow(np.transpose(i), animated=True)] for i in img_list]
+ani = animation.ArtistAnimation(fig, ims, interval=1000, repeat_delay=1000, blit=True)
+
+HTML(ani.to_jshtml())
+
+plt.plot(GLosses)
+plt.plot(DLosses)
+plt.show()
+
