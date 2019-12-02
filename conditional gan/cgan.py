@@ -63,7 +63,7 @@ class Generator(nn.Module):
         self.block5 = nn.ConvTranspose2d(64, out_channels, 4, 2, 1)
 
     def forward(self, noise, labels):
-        input = torch.cat((self.dict(labels).unsqueeze(-1).unsqueeze(-1), noise), 1)
+        input = torch.cat((noise, self.dict(labels).unsqueeze(-1).unsqueeze(-1)), 1)
         out = self.block1(input)
         out = self.block2(out)
         out = self.block3(out)
