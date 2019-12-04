@@ -12,14 +12,14 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import torchvision.utils as vutils
 from torch.autograd import Variable
-from torch import LongTensor
+from torch import LongTensor, FloatTensor
 
 transform = transforms.Compose([transforms.Resize(64), transforms.ToTensor()])
 
-fmnist = datasets.FashionMNIST(root="data/", train=True, download=True, transform=transform)
+fmnist = datasets.MNIST(root=".", train=True, download=True, transform=transform)
 
 dataloader = torch.utils.data.DataLoader(
-    dataset=fmnist, batch_size=32, shuffle=True, num_workers=1
+    dataset=fmnist, batch_size=128, shuffle=True
 )
 
 
@@ -82,8 +82,6 @@ class Discriminator(nn.Module):
         self.block4 = convBNReLU(256, 512)
         self.block5 = nn.Conv2d(512, 64, 4, 1, 0)
         self.source = nn.Linear(64, 1)
-        self.discrete = nn.Linear(64, 10)
-        self.continuous = nn.Linear(64, 2)
 
     def forward(self, input):
         out = self.block1(input)
@@ -92,97 +90,113 @@ class Discriminator(nn.Module):
         out = self.block4(out)
         out = self.block5(out)
         size = out.shape[0]
-        source = torch.sigmoid(self.source(out.view(size, -1)))
-        discrete_code = torch.nn.functional.softmax(self.discrete(out.view(size, -1)), dim=-1)
-        continuous_code = self.continuous(out.view(size, -1))
-        return source, discrete_code, continuous_code
+        out = out.view(size, -1)
+        source = torch.sigmoid(self.source(out))
+        return source, out
+
+
+class QMI(nn.Module):
+    def __init__(self, discete_dim=10, continuous_dim=2):
+        super(QMI, self).__init__()
+        self.discrete = nn.Linear(64, discete_dim)
+        self.continuous = nn.Linear(64, continuous_dim)
+
+    def forward(self, out):
+        discrete_code = torch.nn.functional.softmax(self.discrete(out), dim=-1)
+        continuous_code = self.continuous(out)
+        return discrete_code, continuous_code
 
 
 criterionSource = nn.BCELoss()
 criterionDiscrete = nn.CrossEntropyLoss()
 criterionContinuous = nn.MSELoss()
-G = Generator(in_channels=100, out_channels=1).cuda()
+hidden_dim = 100
+discrete_dim = 10
+continuous_dim = 2
+G = Generator(in_channels=hidden_dim, out_channels=1).cuda()
 D = Discriminator(in_channels=1, num_labels=10).cuda()
+Q = QMI().cuda()
 num_classes = 10
-def to_categorical(y, num_classes=10):
-    y_new = torch.zeros((y.shape[0], num_classes, 1, 1))
-    y_new[:, y, :, :] = 1
-    return Variable(y_new).cuda()
 
-def sample_cont_code(size=2):
-    return Variable(torch.FloatTensor(32, size, 1, 1).uniform_(-1, 1)).cuda() 
+
+def to_categorical(y, num_classes=10):
+    return Variable(FloatTensor(np.identity(num_classes)[y]).unsqueeze(-1).unsqueeze(-1)).cuda()
+
+
+def sample_cont_code(batch_size, size=2):
+    return Variable(FloatTensor(batch_size, size, 1, 1).uniform_(-1, 1)).cuda()
+
 
 optimizerD = optim.Adam(D.parameters(), lr=0.0002, betas=(0.5, 0.999))
-optimizerG = optim.Adam(G.parameters(), lr=0.0002, betas=(0.5, 0.999))
-optimizerBoth = optim.Adam(itertools.chain(D.parameters(), G.parameters()), lr=0.0002, betas=(0.5, 0.999))
-fixedNoise = torch.randn(32, 100, 1, 1).cuda()
-fixedLabels = to_categorical(np.random.randint(0, 10, 32))
-fixedCont = sample_cont_code()
-img_list = []
+optimizerG = optim.Adam(itertools.chain(Q.parameters(), G.parameters()), lr=0.001, betas=(0.5, 0.999))
 GLosses = []
 DLosses = []
 BothLosses = []
+
+from torchvision.utils import save_image
+
+static_z = Variable(FloatTensor(torch.randn((num_classes**2, hidden_dim, 1, 1)))).cuda()
+static_label = to_categorical(
+    np.array([num for _ in range(num_classes) for num in range(num_classes)])
+)
+static_code = Variable(torch.FloatTensor(num_classes**2, continuous_dim, 1, 1).uniform_(-1, 1)).cuda()
+
+
+def sample_image(n_row, batches_done):
+    """Saves a grid of generated digits ranging from 0 to n_classes"""
+    # Static sample
+    z = Variable(FloatTensor(torch.randn((n_row**2, hidden_dim, 1, 1)))).cuda()
+    static_sample = G(z, static_label, static_code)
+    save_image(static_sample.data, "%d.png" % batches_done, nrow=n_row)
+
+    # Get varied c1 and c2
+    zeros = np.zeros((n_row**2, continuous_dim-1))
+    c_varied = np.repeat(np.linspace(-1, 1, n_row)[:, np.newaxis], n_row, 0)
+    c1 = Variable(FloatTensor(np.concatenate((c_varied, zeros), -1))).unsqueeze(-1).unsqueeze(-1).cuda()
+    c2 = Variable(FloatTensor(np.concatenate((zeros, c_varied), -1))).unsqueeze(-1).unsqueeze(-1).cuda()
+    sample1 = G(static_z, static_label, c1)
+    sample2 = G(static_z, static_label, c2)
+    save_image(sample1.data, "c1%d.png" % batches_done, nrow=n_row)
+    save_image(sample2.data, "c2%d.png" % batches_done, nrow=n_row)
+
 
 for epoch in range(0, 50):
     print(epoch)
     for i, data in enumerate(dataloader):
         trueTensor = torch.Tensor([0.7 + 0.3 * np.random.random()]).cuda()
         falseTensor = torch.Tensor([0.3 * np.random.random()]).cuda()
-        images, labels = data
-        images, labels = images.cuda(), labels.cuda()
-        
-        D.zero_grad()
-        realSource, _, _ = D(images)
+        images, _ = data
+        images = images.cuda()
+        batch_size = images.shape[0]
+        realSource, _ = D(images)
         realLoss = criterionSource(realSource, trueTensor.expand_as(realSource))
-        realLoss.backward()
-        latent = Variable(torch.randn(images.shape[0], 100, 1, 1)).cuda()
-        random_labels = to_categorical(np.random.randint(0, 10, images.shape[0]))
-        random_cont = sample_cont_code()
+        latent = Variable(torch.randn(batch_size, hidden_dim, 1, 1)).cuda()
+        random_labels = to_categorical(np.random.randint(0, discrete_dim, batch_size))
+        random_cont = sample_cont_code(batch_size)
         fakeData = G(latent, random_labels, random_cont)
-        fakeSource, _, _ = D(fakeData.detach())
+        fakeSource, _ = D(fakeData)
         fakeLoss = criterionSource(fakeSource, falseTensor.expand_as(fakeSource))
-        fakeLoss.backward()
         lossD = realLoss + fakeLoss
+        optimizerD.zero_grad()
+        lossD.backward()
         optimizerD.step()
-        
-        G.zero_grad()
-        fakeSource, _, _ = D(fakeData)
+
+        latent = Variable(torch.randn(batch_size, hidden_dim, 1, 1)).cuda()
+        random_labels = to_categorical(np.random.randint(0, discrete_dim, batch_size))
+        random_cont = sample_cont_code(batch_size)
+        fakeData = G(latent, random_labels, random_cont)
+        fakeSource, fakeFeatures = D(fakeData)
+        fakeDiscrete, fakeContinuous = Q(fakeFeatures)
         lossG = criterionSource(fakeSource, trueTensor.expand_as(fakeSource))
-        lossG.backward()
+        lossBoth = criterionDiscrete(fakeDiscrete, random_labels.squeeze(-1).squeeze(-1).argmax(-1).type(torch.long)) \
+                   + 0.1 * criterionContinuous(fakeContinuous, random_cont.squeeze(-1).squeeze(-1))
+        lossCombined = lossG + lossBoth
+        optimizerG.zero_grad()
+        lossCombined.backward()
         optimizerG.step()
-        
-        optimizerBoth.zero_grad()
-        latent = Variable(torch.randn(images.shape[0], 100, 1, 1)).cuda()
-        random_labels = Variable(torch.Tensor(np.random.randint(0, 10, images.shape[0])).type(torch.long)).cuda()
-        random_cont = sample_cont_code()
-        fakeData = G(latent, to_categorical(random_labels), random_cont)
-        _, fakeDiscrete, fakeContinuous = D(fakeData)
-        lossBoth = criterionDiscrete(fakeDiscrete, random_labels) \
-                + 0.1*criterionContinuous(fakeContinuous, random_cont.squeeze(-1).squeeze(-1))
-        lossBoth.backward()
-        optimizerBoth.step()
-        GLosses.append(lossG.cpu())
-        DLosses.append(lossD.cpu())
-        BothLosses.append(lossBoth.cpu())
-    if (epoch + 1) % 10 == 0:
-        print("Loss D {} G {}".format(lossD.cpu(), lossG.cpu()))
+    print("Loss D {} G {}".format(lossD.cpu(), lossG.cpu()))
+    with torch.no_grad():
+        sample_image(10, epoch)
+    if (epoch + 1) % 5 == 0:
         torch.save(G.state_dict(), "G" + str(epoch) + ".pt")
         torch.save(D.state_dict(), "D" + str(epoch) + ".pt")
-    with torch.no_grad():
-        fake = G(fixedNoise, fixedLabels, fixedCont).detach().cpu()
-    img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
-
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from IPython.display import HTML
-
-fig = plt.figure(figsize=(8, 8))
-plt.axis("off")
-ims = [[plt.imshow(np.transpose(i), animated=True)] for i in img_list]
-ani = animation.ArtistAnimation(fig, ims, interval=1000, repeat_delay=1000, blit=True)
-
-HTML(ani.to_jshtml())
-
-plt.plot(GLosses)
-plt.plot(DLosses)
-plt.show()
